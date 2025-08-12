@@ -18,7 +18,7 @@
                             <i class="fas fa-language me-2"></i>
                             Indian Language Translator
                         </h1>
-                        <p class="mb-0 mt-2">Translate English to Indian Languages</p>
+                        <p class="mb-0 mt-2">Translate to Indian Languages</p>
                     </div>
                     <div class="card-body p-4">
                         <form id="translationForm">
@@ -27,10 +27,21 @@
                                     <label for="sourceLanguage" class="form-label">
                                         <i class="fas fa-globe me-1"></i>Source Language
                                     </label>
-                                    <select class="form-select" id="sourceLanguage" disabled>
+                                    <select class="form-select" id="sourceLanguage" required>
+                                        <option value="">Select source language...</option>
                                         <option value="en">🇺🇸 English</option>
+                                        <option value="hi">🇮🇳 Hindi (हिंदी)</option>
+                                        <option value="ta">🇮🇳 Tamil (தமிழ்)</option>
+                                        <option value="te">🇮🇳 Telugu (తెలుగు)</option>
+                                        <option value="kn">🇮🇳 Kannada (ಕನ್ನಡ)</option>
+                                        <option value="ml">🇮🇳 Malayalam (മലയാളം)</option>
+                                        <option value="bn">🇮🇳 Bengali (বাংলা)</option>
+                                        <option value="mr">🇮🇳 Marathi (मराठी)</option>
+                                        <option value="gu">🇮🇳 Gujarati (ગુજરાતી)</option>
+                                        <option value="or">🇮🇳 Odia (ଓଡ଼ିଆ)</option>
+                                        <option value="pa">🇮🇳 Punjabi (ਪੰਜਾਬੀ)</option>
                                     </select>
-                                    <small class="text-muted">Currently supports English as source language</small>
+                                    <small class="text-muted">Translate between English and any listed Indian language</small>
                                 </div>
                                 <div class="col-md-6">
                                     <label for="targetLanguage" class="form-label">
@@ -38,6 +49,7 @@
                                     </label>
                                     <select class="form-select" id="targetLanguage" required>
                                         <option value="">Select target language...</option>
+                                        <option value="en">🇺🇸 English</option>
                                         <option value="hi">🇮🇳 Hindi (हिंदी)</option>
                                         <option value="ta">🇮🇳 Tamil (தமிழ்)</option>
                                         <option value="te">🇮🇳 Telugu (తెలుగు)</option>
@@ -119,10 +131,18 @@
             e.preventDefault();
             
             const sourceTextValue = sourceText.value.trim();
+            const sourceLanguage = document.getElementById('sourceLanguage').value;
             const targetLanguage = document.getElementById('targetLanguage').value;
             
-            if (!sourceTextValue || !targetLanguage) {
-                showAlert('Please enter text and select a target language.', 'warning');
+            if (!sourceTextValue || !targetLanguage || !sourceLanguage) {
+                showAlert('Please enter text and select both source and target languages.', 'warning');
+                return;
+            }
+
+            // Prevent same-lang translation
+            if (sourceLanguage === targetLanguage) {
+                document.getElementById('translatedText').textContent = sourceTextValue;
+                document.getElementById('translationResult').style.display = 'block';
                 return;
             }
 
@@ -147,7 +167,8 @@
                     },
                     body: JSON.stringify({
                         source_text: sourceTextValue,
-                        target_lang: targetLanguage
+                        target_lang: targetLanguage,
+                        source_lang: sourceLanguage
                     })
                 });
 
@@ -200,21 +221,31 @@
 
         // Example texts for different languages
         const examples = {
-            'hi': 'Hello, how are you?',
-            'ta': 'Welcome to our website.',
-            'te': 'Thank you for visiting.',
-            'kn': 'Good morning everyone.',
-            'ml': 'Have a great day!',
-            'bn': 'Nice to meet you.',
-            'mr': 'Please help me.',
-            'gu': 'Where is the market?',
-            'or': 'What time is it?',
-            'pa': 'How much does this cost?'
+            'en': 'Hello, how are you?',
+            'hi': 'नमस्ते, आप कैसे हैं?',
+            'ta': 'வணக்கம், எப்படி இருக்கிறீர்கள்?',
+            'te': 'హలో, మీరు ఎలా ఉన్నారు?',
+            'kn': 'ಹಲೋ, ನೀವು ಹೇಗಿದ್ದೀರಾ?',
+            'ml': 'ഹലോ, നിങ്ങളെങ്ങനെ ഇരിക്കുന്നു?',
+            'bn': 'হ্যালো, আপনি কেমন আছেন?',
+            'mr': 'नमस्कार, तुम्ही कसे आहात?',
+            'gu': 'નમસ્તે, તમે કેમ છો?',
+            'or': 'ନମସ୍କାର, କେମିତି ଅଛନ୍ତି?',
+            'pa': 'ਸਤ ਸ੍ਰੀ ਅਕਾਲ, ਤੁਸੀਂ ਕਿਵੇਂ ਹੋ?'
         };
 
-        // Auto-fill example when target language changes
-        document.getElementById('targetLanguage').addEventListener('change', function() {
+        // Auto-fill example based on selected source language
+        document.getElementById('sourceLanguage').addEventListener('change', function() {
             const selectedLang = this.value;
+            if (selectedLang && examples[selectedLang] && !sourceText.value.trim()) {
+                sourceText.value = examples[selectedLang];
+                charCount.textContent = sourceText.value.length;
+            }
+        });
+
+        // Auto-fill example when target language changes (only if input empty)
+        document.getElementById('targetLanguage').addEventListener('change', function() {
+            const selectedLang = document.getElementById('sourceLanguage').value;
             if (selectedLang && examples[selectedLang] && !sourceText.value.trim()) {
                 sourceText.value = examples[selectedLang];
                 charCount.textContent = sourceText.value.length;

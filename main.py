@@ -21,11 +21,13 @@ except Exception:
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 MODEL_ID = "ai4bharat/indictrans2-en-indic-1B"
+INDIC_EN_MODEL_ID = "ai4bharat/indictrans2-indic-en-1B"
 
 # -----------------------------
 # Language tags (two-part tags)
 # -----------------------------
 LANGUAGE_TAGS = {
+    "en": "eng_Latn",
     "hi": "hin_Deva",
     "ta": "tam_Taml",
     "te": "tel_Telu",
@@ -43,6 +45,7 @@ LANGUAGE_SCRIPT = {k: v.split("_")[1] for k, v in LANGUAGE_TAGS.items()}
 
 # Unicode script ranges for sanity check
 SCRIPT_RANGES = {
+    "Latn": (0x0041, 0x007A),  # coarse Latin range (A-z)
     "Deva": (0x0900, 0x097F),
     "Beng": (0x0980, 0x09FF),
     "Guru": (0x0A00, 0x0A7F),
@@ -98,10 +101,11 @@ def transliterate_if_needed(text: str, target_script: str) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
-        print("Starting up... Loading model/tokenizer/pipeline")
+        print("Starting up... Loading models/tokenizers")
         get_tokenizer()
         get_model()
-        get_translation_pipe()
+        get_tokenizer_indic_en()
+        get_model_indic_en()
         print("Resources loaded successfully")
     except Exception as e:
         print(f"Warning: Could not pre-load resources: {e}")
@@ -124,7 +128,7 @@ app.add_middleware(
 )
 
 # -----------------------------
-# Cached loaders
+# Cached loaders (EN→INDIC)
 # -----------------------------
 @lru_cache(maxsize=1)
 def load_tokenizer():
@@ -156,7 +160,7 @@ def load_model():
             print(f"Trying model strategy {i}...")
             mdl = AutoModelForSeq2SeqLM.from_pretrained(MODEL_ID, **cfg)
 
-            # Disable caching to avoid "Cache only has 0 layers"
+            # Disable caching to avoid KV-cache issues
             for attr in ("config", "generation_config"):
                 obj = getattr(mdl, attr, None)
                 if obj is not None:
@@ -191,18 +195,62 @@ def get_model():
         model = load_model()
     return model
 
+# -----------------------------
+# Additional loaders (INDIC→EN)
+# -----------------------------
 @lru_cache(maxsize=1)
-def get_translation_pipe():
-    tok = get_tokenizer()
-    mdl = get_model()
-    device_idx = 0 if torch.cuda.is_available() else -1
-    return pipeline(
-        "translation",
-        model=mdl,
-        tokenizer=tok,
+def load_tokenizer_indic_en():
+    print("Loading INDIC→EN tokenizer...")
+    tok = AutoTokenizer.from_pretrained(
+        INDIC_EN_MODEL_ID,
         trust_remote_code=True,
-        device=device_idx
+        cache_dir="/app/.cache" if os.path.exists("/app") else None
     )
+    print("INDIC→EN tokenizer loaded")
+    return tok
+
+@lru_cache(maxsize=1)
+def load_model_indic_en():
+    print("Loading INDIC→EN model...")
+    configs = [
+        dict(trust_remote_code=True,
+             torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+             cache_dir="/app/.cache" if os.path.exists("/app") else None,
+             low_cpu_mem_usage=True),
+        dict(trust_remote_code=True,
+             torch_dtype=torch.float32,
+             cache_dir="/app/.cache" if os.path.exists("/app") else None),
+        dict(trust_remote_code=True),
+    ]
+    last_err = None
+    for i, cfg in enumerate(configs, 1):
+        try:
+            print(f"Trying INDIC→EN model strategy {i}...")
+            mdl = AutoModelForSeq2SeqLM.from_pretrained(INDIC_EN_MODEL_ID, **cfg)
+            for attr in ("config", "generation_config"):
+                obj = getattr(mdl, attr, None)
+                if obj is not None:
+                    try: setattr(obj, "use_cache", False)
+                    except Exception: pass
+            try: mdl.config.cache_implementation = None
+            except Exception: pass
+            try: mdl.cache_implementation = None
+            except Exception: pass
+            mdl.eval().to(DEVICE)
+            print(f"INDIC→EN model loaded on {DEVICE}")
+            return mdl
+        except Exception as e:
+            print(f"INDIC→EN strategy {i} failed: {e}")
+            last_err = e
+    raise RuntimeError(f"Failed to load INDIC→EN model: {last_err}")
+
+@lru_cache(maxsize=1)
+def get_tokenizer_indic_en():
+    return load_tokenizer_indic_en()
+
+@lru_cache(maxsize=1)
+def get_model_indic_en():
+    return load_model_indic_en()
 
 # -----------------------------
 # Schemas
@@ -210,61 +258,34 @@ def get_translation_pipe():
 class TranslationRequest(BaseModel):
     source_text: str
     target_lang: str  # 'hi', 'ta', etc.
+    source_lang: str = "en"  # default English, but allow any supported
 
 # -----------------------------
-# Core translation
+# Core translation (explicit generate with tags)
 # -----------------------------
 @lru_cache(maxsize=512)
-def cached_translation(source_text: str, target_lang: str) -> str:
+def cached_translation(source_text: str, target_lang: str, source_lang: str = "en") -> str:
     if target_lang not in LANGUAGE_TAGS:
-        raise ValueError(f"Unsupported language: {target_lang}")
+        raise ValueError(f"Unsupported target language: {target_lang}")
+    if source_lang not in LANGUAGE_TAGS:
+        raise ValueError(f"Unsupported source language: {source_lang}")
+    if source_lang == target_lang:
+        return (source_text or "").strip()
 
-    tgt_tag = LANGUAGE_TAGS[target_lang]     # e.g., "tam_Taml"
-    iso3   = LANGUAGE_ISO3[target_lang]      # e.g., "tam"
-    script = LANGUAGE_SCRIPT[target_lang]    # e.g., "Taml"
+    tgt_tag = LANGUAGE_TAGS[target_lang]
+    src_tag = LANGUAGE_TAGS[source_lang]
+    tgt_iso, tgt_script = tgt_tag.split("_")
 
     text = (source_text or "").strip()
     if not text:
         return ""
 
-    translator = get_translation_pipe()
-
-    attempts = [
-        dict(src_lang="eng_Latn", tgt_lang=tgt_tag),
-        dict(src_lang="eng",      tgt_lang=iso3, tgt_script=script),
-        dict(src_lang="eng_Latn", tgt_lang=iso3, tgt_script=script),
-        dict(src_lang="eng",      tgt_lang=iso3, target_script=script),
-        dict(src_lang="eng_Latn", tgt_lang=iso3, target_script=script),
-        dict(src_lang="eng_Latn", tgt_lang=iso3, return_in_native_script=True),
-        dict(src_lang="eng",      tgt_lang=iso3, return_in_native_script=True),
-    ]
-
-    last_err = None
-    for kwargs in attempts:
-        try:
-            out = translator(
-                text,
-                max_new_tokens=256,
-                num_beams=1,
-                do_sample=False,
-                use_cache=False,  # critical to avoid KV-cache bug
-                **kwargs
-            )
-            cand = out[0]["translation_text"].strip()
-            # If wrong script but Devanagari, try auto transliteration to target
-            if not looks_like_script(cand, script) and looks_like_script(cand, "Deva"):
-                cand = transliterate_if_needed(cand, script)
-            if looks_like_script(cand, script):
-                return cand
-            last_err = f"Wrong script for {target_lang}: {cand[:60]}..."
-        except Exception as e:
-            last_err = e
-            continue
-
-    # Fallback: manual generate with explicit tags (likely romanized or Devanagari)
-    try:
-        tok, mdl = get_tokenizer(), get_model()
-        tagged = f"eng_Latn {tgt_tag} {text}"
+    def generate_with_tags(text: str, src: str, tgt: str, use_indic_en: bool = False) -> str:
+        if use_indic_en:
+            tok, mdl = get_tokenizer_indic_en(), get_model_indic_en()
+        else:
+            tok, mdl = get_tokenizer(), get_model()
+        tagged = f"{src} {tgt} {text}"
         inputs = tok(tagged, return_tensors="pt", padding=True, truncation=True, max_length=512)
         inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
         with torch.no_grad():
@@ -275,15 +296,25 @@ def cached_translation(source_text: str, target_lang: str) -> str:
                 do_sample=False,
                 use_cache=False,
                 pad_token_id=tok.pad_token_id,
-                eos_token_id=tok.eos_token_id
+                eos_token_id=tok.eos_token_id,
             )
         cand = tok.batch_decode(outputs, skip_special_tokens=True)[0].strip()
-        # If Devanagari but target != Devanagari, try transliteration too
-        if not looks_like_script(cand, script) and looks_like_script(cand, "Deva"):
-            cand = transliterate_if_needed(cand, script)
         return cand
-    except Exception as gen_err:
-        raise RuntimeError(f"Model translation failed: {last_err}") from gen_err
+
+    try:
+        if source_lang == "en":
+            cand = generate_with_tags(text, src_tag, tgt_tag, use_indic_en=False)
+        elif target_lang == "en":
+            cand = generate_with_tags(text, src_tag, "eng_Latn", use_indic_en=True)
+        else:
+            mid = generate_with_tags(text, src_tag, "eng_Latn", use_indic_en=True)
+            cand = generate_with_tags(mid, "eng_Latn", tgt_tag, use_indic_en=False)
+
+        if target_lang != "en" and not looks_like_script(cand, tgt_script) and looks_like_script(cand, "Deva"):
+            cand = transliterate_if_needed(cand, tgt_script)
+        return cand
+    except Exception as e:
+        raise RuntimeError(f"Model translation failed: {e}") from e
 
 # -----------------------------
 # Routes
@@ -293,7 +324,11 @@ app = app  # keep reference name stable
 @app.post("/api/v1/translate")
 def translate(request: TranslationRequest):
     try:
-        translated_text = cached_translation(request.source_text, request.target_lang)
+        translated_text = cached_translation(
+            request.source_text,
+            request.target_lang,
+            request.source_lang,
+        )
         return {"translated_text": translated_text}
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
@@ -309,13 +344,15 @@ def health_check():
     try:
         _tok = get_tokenizer()
         _mdl = get_model()
-        _pipe = get_translation_pipe()
+        _tok_ie = get_tokenizer_indic_en()
+        _mdl_ie = get_model_indic_en()
         return {
             "status": "healthy",
             "device": str(DEVICE),
-            "model_loaded": _mdl is not None,
-            "tokenizer_loaded": _tok is not None,
-            "pipeline_ready": _pipe is not None,
+            "model_loaded_en_indic": _mdl is not None,
+            "tokenizer_loaded_en_indic": _tok is not None,
+            "model_loaded_indic_en": _mdl_ie is not None,
+            "tokenizer_loaded_indic_en": _tok_ie is not None,
             "translit_enabled": bool(itransliterate and SANSCRIPT_MAP),
         }
     except Exception as e:

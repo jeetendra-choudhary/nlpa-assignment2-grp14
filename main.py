@@ -95,6 +95,29 @@ def transliterate_if_needed(text: str, target_script: str) -> str:
                 pass
     return text
 
+# New: Transliterate romanized Indic (Latin) -> target script
+def roman_to_script(text: str, target_script: str) -> str:
+    if not (itransliterate and SANSCRIPT_MAP):
+        return text
+    dst = SANSCRIPT_MAP.get(target_script)
+    if not dst:
+        return text
+    # Try common Roman schemes
+    for scheme in ("ITRANS", "HK", "IAST"):
+        src = getattr(sanscript, scheme, None)
+        if src is None:
+            continue
+        try:
+            out = itransliterate(text, src, dst)
+            if looks_like_script(out, target_script):
+                return out
+        except Exception:
+            continue
+    return text
+
+def is_ascii_roman(s: str) -> bool:
+    return all(ord(c) < 128 for c in s)
+
 # -----------------------------
 # App lifecycle
 # -----------------------------
@@ -310,11 +333,26 @@ def cached_translation(source_text: str, target_lang: str, source_lang: str = "e
             mid = generate_with_tags(text, src_tag, "eng_Latn", use_indic_en=True)
             cand = generate_with_tags(mid, "eng_Latn", tgt_tag, use_indic_en=False)
 
-        if target_lang != "en" and not looks_like_script(cand, tgt_script) and looks_like_script(cand, "Deva"):
-            cand = transliterate_if_needed(cand, tgt_script)
+        # Script correction and romanized fallback
+        if target_lang != "en":
+            if not looks_like_script(cand, tgt_script):
+                # If it's Devanagari but target is different, transliterate
+                if looks_like_script(cand, "Deva"):
+                    cand = transliterate_if_needed(cand, tgt_script)
+                # If source was English and likely romanized Indic, try roman→script
+                elif source_lang == "en" and is_ascii_roman(text):
+                    rom = roman_to_script(text, tgt_script)
+                    if looks_like_script(rom, tgt_script):
+                        return rom
         return cand
     except Exception as e:
-        raise RuntimeError(f"Model translation failed: {e}") from e
+        # Fallbacks for untranslatable content
+        if target_lang != "en" and source_lang == "en" and is_ascii_roman(text):
+            rom = roman_to_script(text, tgt_script)
+            if looks_like_script(rom, tgt_script):
+                return rom
+        # Last resort: return original text
+        return text
 
 # -----------------------------
 # Routes

@@ -26,6 +26,7 @@ A web-based translation service that translates English text to various Indian l
 - `GET /` - Web interface
 - `POST /api/v1/translate` - Translation API
 - `GET /health` - Health check
+- `GET /docs` - API Docs (swagger)
 
 ## Usage
 

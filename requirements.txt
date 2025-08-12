@@ -8,3 +8,5 @@ python-multipart
 protobuf
 sacremoses
 indic-nlp-library
+indictrans2
+indic-transliteration

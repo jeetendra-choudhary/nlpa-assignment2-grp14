@@ -4,7 +4,7 @@ FROM python:3.10-slim
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-ENV TRANSFORMERS_CACHE=/app/.cache
+ENV HF_HOME=/app/.cache
 ENV HF_HUB_DISABLE_SYMLINKS_WARNING=1
 
 # Set working directory

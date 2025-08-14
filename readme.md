@@ -22,6 +22,12 @@ A web-based translation service that translates English text to various Indian l
 - **Copy to Clipboard**: Easy copying of translated text
 - **Responsive Design**: Works on desktop and mobile devices
 
+#### PMIndia dataset has been used already to train IndicTrans2 Model Hence doesn't need separate re-training
+> "The NMT model used in our system (IndicTrans2) was pre-trained on multiple Indian language corpora, including the PMIndia dataset — a publicly available parallel corpus of Prime Minister’s speeches in multiple Indian languages (Haddow & Kirefu, 2020)."
+
+Haddow, B., & Kirefu, F. (2020). PMIndia: A Parallel Corpus of the Prime Minister of India's Speeches. https://github.com/bhaddow/pmindia-crawler
+
+
 ### API Endpoints
 - `GET /` - Web interface
 - `POST /api/v1/translate` - Translation API
